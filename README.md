@@ -49,6 +49,17 @@ Here's an example of what you can do when it's connected to Claude.
 
    After approximately 20 days, you will might need to re-authenticate.
 
+   **Linking with a phone number instead of a QR code**
+
+   If the terminal QR code is hard to scan, you can link with an 8-character code instead. Set the `WHATSAPP_PAIR_PHONE` environment variable to your number in full international format (digits only, no `+`, no spaces, no leading zero) when starting the bridge:
+
+   ```bash
+   cd whatsapp-bridge
+   WHATSAPP_PAIR_PHONE=14155552671 go run main.go
+   ```
+
+   The bridge prints a code like `ABCD-1234`. On your phone, open **WhatsApp > Settings > Linked Devices > Link a Device**, tap **"Link with phone number instead"**, and enter the code. Once linked, the session is saved, so on later runs you can start the bridge normally (without the variable).
+
 3. **Connect to the MCP server**
 
    Copy the below json with the appropriate {{PATH}} values:

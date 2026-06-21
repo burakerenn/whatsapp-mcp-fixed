@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +31,20 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+// pairDisplayName returns the "Browser (OS)" string shown on the phone when
+// linking via a phone-number code. WhatsApp validates this against a list of
+// known browsers/OSes and rejects anything else with a 400, so keep it simple.
+func pairDisplayName() string {
+	osName := "Linux"
+	switch runtime.GOOS {
+	case "darwin":
+		osName = "Mac OS"
+	case "windows":
+		osName = "Windows"
+	}
+	return "Chrome (" + osName + ")"
+}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -836,6 +851,9 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	// Create channel to track connection success
+	connected := make(chan bool, 1)
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -849,33 +867,57 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			// Signal pairing success (non-blocking) for phone-number pairing flow
+			select {
+			case connected <- true:
+			default:
+			}
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
 		}
 	})
 
-	// Create channel to track connection success
-	connected := make(chan bool, 1)
-
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
-		qrChan, _ := client.GetQRChannel(context.Background())
-		err = client.Connect()
-		if err != nil {
-			logger.Errorf("Failed to connect: %v", err)
-			return
-		}
+		// If WHATSAPP_PAIR_PHONE is set, link via an 8-character code typed into
+		// the phone (Link a Device > "Link with phone number instead") instead of
+		// scanning a QR code. The value must be the full number in international
+		// format, digits only (e.g. 14155552671). This is handy when the terminal
+		// QR is hard to scan.
+		pairPhone := os.Getenv("WHATSAPP_PAIR_PHONE")
+		if pairPhone != "" {
+			err = client.Connect()
+			if err != nil {
+				logger.Errorf("Failed to connect: %v", err)
+				return
+			}
+			code, err := client.PairPhone(context.Background(), pairPhone, true, whatsmeow.PairClientChrome, pairDisplayName())
+			if err != nil {
+				logger.Errorf("Failed to request pairing code: %v", err)
+				return
+			}
+			fmt.Println("\nOn your phone, open WhatsApp > Settings > Linked Devices > Link a Device,")
+			fmt.Println("tap \"Link with phone number instead\", then enter this code:")
+			fmt.Printf("\n    %s\n\n", code)
+		} else {
+			qrChan, _ := client.GetQRChannel(context.Background())
+			err = client.Connect()
+			if err != nil {
+				logger.Errorf("Failed to connect: %v", err)
+				return
+			}
 
-		// Print QR code for pairing with phone
-		for evt := range qrChan {
-			if evt.Event == "code" {
-				fmt.Println("\nScan this QR code with your WhatsApp app:")
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-			} else if evt.Event == "success" {
-				connected <- true
-				break
+			// Print QR code for pairing with phone
+			for evt := range qrChan {
+				if evt.Event == "code" {
+					fmt.Println("\nScan this QR code with your WhatsApp app:")
+					qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				} else if evt.Event == "success" {
+					connected <- true
+					break
+				}
 			}
 		}
 
@@ -884,7 +926,7 @@ func main() {
 		case <-connected:
 			fmt.Println("\nSuccessfully connected and authenticated!")
 		case <-time.After(3 * time.Minute):
-			logger.Errorf("Timeout waiting for QR code scan")
+			logger.Errorf("Timeout waiting for pairing")
 			return
 		}
 	} else {
